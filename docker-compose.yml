@@ -1,0 +1,21 @@
+version: "3.9"
+
+services:
+  stock-analysis:
+    build: .
+    container_name: stock-analysis
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    environment:
+      - DB_PATH=/app/data/stock_data.db
+      - TZ=Asia/Ho_Chi_Minh
+    volumes:
+      - stock_data:/app/data
+      - reports_data:/app/reports
+
+volumes:
+  stock_data:
+  reports_data:

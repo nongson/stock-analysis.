@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+*.egg-info/
+
+# Database
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Reports
+reports/
+
+# Environment
+.env
+
+# IDE
+.idea/
+.DS_Store
+
+# Logs
+*.log
