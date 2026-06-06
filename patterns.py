@@ -3,7 +3,7 @@
 - Strategy Pattern: interchangeable analysis/backtest strategies
 - Observer Pattern: notify multiple channels (Telegram, file, console)
 - Factory Pattern: create analysis pipelines
-- Singleton Pattern: database connection
+- DI Pattern: injectable database implementation
 - Facade Pattern: simplified interface to complex subsystems
 """
 
@@ -11,7 +11,7 @@ import abc
 import sqlite3
 import logging
 from datetime import datetime
-from typing import Dict, List, Optional, Any, Protocol
+from typing import Dict, List, Optional, Any
 
 import pandas as pd
 import numpy as np
@@ -21,9 +21,38 @@ from config import DB_PATH
 logger = logging.getLogger(__name__)
 
 
-# ==================== Singleton Pattern ====================
+# ==================== Database Interface (DI) ====================
 
-class DatabaseSingleton:
+class Database(abc.ABC):
+    """Abstract database interface for dependency injection."""
+
+    @abc.abstractmethod
+    def execute(self, sql: str, params=None):
+        pass
+
+    @abc.abstractmethod
+    def executemany(self, sql: str, params: List[tuple]):
+        pass
+
+    @abc.abstractmethod
+    def fetchall(self, sql: str, params=None) -> List[dict]:
+        pass
+
+    @abc.abstractmethod
+    def fetchone(self, sql: str, params=None) -> Optional[dict]:
+        pass
+
+    @abc.abstractmethod
+    def commit(self):
+        pass
+
+    @abc.abstractmethod
+    def close(self):
+        pass
+
+
+class SyncDatabase(Database):
+    """Sync SQLite database connection (singleton)."""
     _instance = None
     _conn = None
 
@@ -32,7 +61,7 @@ class DatabaseSingleton:
             cls._instance = super().__new__(cls)
         return cls._instance
 
-    def get_connection(self) -> sqlite3.Connection:
+    def _ensure_conn(self):
         if self._conn is None:
             self._conn = sqlite3.connect(str(DB_PATH))
             self._conn.row_factory = sqlite3.Row
@@ -40,9 +69,36 @@ class DatabaseSingleton:
             self._init_tables()
         return self._conn
 
+    def get_connection(self) -> sqlite3.Connection:
+        return self._ensure_conn()
+
+    def execute(self, sql: str, params=None):
+        return self._ensure_conn().execute(sql, params or ())
+
+    def executemany(self, sql: str, params: List[tuple]):
+        return self._ensure_conn().executemany(sql, params)
+
+    def fetchall(self, sql: str, params=None) -> List[dict]:
+        cur = self.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+
+    def fetchone(self, sql: str, params=None) -> Optional[dict]:
+        cur = self.execute(sql, params)
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+    def commit(self):
+        if self._conn:
+            self._conn.commit()
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            SyncDatabase._instance = None
+            SyncDatabase._conn = None
+
     def _init_tables(self):
-        conn = self._conn
-        conn.execute("""
+        self._ensure_conn().executescript("""
             CREATE TABLE IF NOT EXISTS stock_prices (
                 symbol TEXT NOT NULL,
                 date TEXT NOT NULL,
@@ -52,9 +108,7 @@ class DatabaseSingleton:
                 close REAL,
                 volume INTEGER,
                 PRIMARY KEY (symbol, date)
-            )
-        """)
-        conn.execute("""
+            );
             CREATE TABLE IF NOT EXISTS backtest_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
@@ -67,9 +121,7 @@ class DatabaseSingleton:
                 change_pct REAL,
                 correct INTEGER,
                 accuracy REAL
-            )
-        """)
-        conn.execute("""
+            );
             CREATE TABLE IF NOT EXISTS prediction_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 symbol TEXT NOT NULL,
@@ -79,15 +131,105 @@ class DatabaseSingleton:
                 medium_term TEXT,
                 long_term TEXT,
                 signal_score REAL
-            )
+            );
         """)
-        conn.commit()
 
-    def close(self):
+
+class AsyncDatabase(Database):
+    """Async SQLite database using aiosqlite."""
+    _instance = None
+    _conn = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    async def _ensure_conn(self):
+        if self._conn is None:
+            import aiosqlite
+            self._conn = await aiosqlite.connect(str(DB_PATH))
+            self._conn.row_factory = sqlite3.Row
+            await self._conn.execute("PRAGMA journal_mode=WAL")
+            await self._init_tables()
+        return self._conn
+
+    async def execute(self, sql: str, params=None):
+        conn = await self._ensure_conn()
+        return await conn.execute(sql, params or ())
+
+    async def executemany(self, sql: str, params: List[tuple]):
+        conn = await self._ensure_conn()
+        return await conn.executemany(sql, params)
+
+    async def fetchall(self, sql: str, params=None) -> List[dict]:
+        cur = await self.execute(sql, params)
+        rows = await cur.fetchall()
+        return [dict(row) for row in rows]
+
+    async def fetchone(self, sql: str, params=None) -> Optional[dict]:
+        cur = await self.execute(sql, params)
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+    async def commit(self):
         if self._conn:
-            self._conn.close()
-            DatabaseSingleton._instance = None
-            DatabaseSingleton._conn = None
+            await self._conn.commit()
+
+    async def close(self):
+        if self._conn:
+            await self._conn.close()
+            AsyncDatabase._instance = None
+            AsyncDatabase._conn = None
+
+    async def _init_tables(self):
+        conn = await self._ensure_conn()
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS stock_prices (
+                symbol TEXT NOT NULL,
+                date TEXT NOT NULL,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER,
+                PRIMARY KEY (symbol, date)
+            );
+            CREATE TABLE IF NOT EXISTS backtest_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                run_date TEXT NOT NULL,
+                test_date TEXT NOT NULL,
+                predicted_trend TEXT,
+                actual_direction TEXT,
+                prev_close REAL,
+                actual_close REAL,
+                change_pct REAL,
+                correct INTEGER,
+                accuracy REAL
+            );
+            CREATE TABLE IF NOT EXISTS prediction_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                symbol TEXT NOT NULL,
+                run_date TEXT NOT NULL,
+                close_price REAL,
+                short_term TEXT,
+                medium_term TEXT,
+                long_term TEXT,
+                signal_score REAL
+            );
+        """)
+
+
+def get_db(async_: bool = False) -> Database:
+    """Factory: returns SyncDatabase or AsyncDatabase singleton."""
+    if async_:
+        return AsyncDatabase()
+    return SyncDatabase()
+
+
+# Keep backward compat
+DatabaseSingleton = SyncDatabase
 
 
 # ==================== Strategy Pattern ====================
@@ -124,8 +266,9 @@ class TechnicalAnalysisStrategy(AnalysisStrategy):
 
 
 class BacktestStrategy(AnalysisStrategy):
-    def __init__(self, n_tests: int = 20):
+    def __init__(self, n_tests: int = 20, db: Optional[Database] = None):
         self.n_tests = n_tests
+        self.db = db or SyncDatabase()
 
     def analyze(self, symbol: str, df: pd.DataFrame) -> Optional[Dict[str, Any]]:
         if len(df) < self.n_tests + 100:
@@ -135,8 +278,7 @@ class BacktestStrategy(AnalysisStrategy):
         strategy = TechnicalAnalysisStrategy()
         results = []
         skip_count = 0
-        db = DatabaseSingleton()
-        conn = db.get_connection()
+        conn = self.db.get_connection()
 
         for i in range(self.n_tests, 0, -1):
             cut_idx = len(df) - i

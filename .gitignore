@@ -24,3 +24,6 @@ reports/
 
 # Logs
 *.log
+
+# Backup files from refactoring
+*.bak

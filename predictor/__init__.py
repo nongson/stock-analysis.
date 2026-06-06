@@ -1,87 +1,10 @@
-"""Prediction engine — Voting System với ngưỡng ≥70% đồng thuận.
-
-Cách hoạt động:
-1. Mỗi indicator vote: MUA (+1), BÁN (-1), hoặc KHÔNG_RÕ (0)
-2. Tính weighted vote: ∑(vote × weight) / ∑(weight của vote không trung tính)
-3. Nếu weighted vote >= +0.70 → MUA (tự tin = vote%)
-4. Nếu weighted vote <= -0.70 → BÁN (tự tin = vote%)
-5. Còn lại → KHÔNG_RÕ (không đủ đồng thuận)
-"""
+"""Prediction Engine — phân tích xu hướng từ chỉ báo kỹ thuật."""
 
 import numpy as np
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional
 
-
-_WEIGHTS: Dict[str, float] = {
-    "supertrend": 1.5,
-    "adx": 1.4,
-    "ichimoku": 1.3,
-    "trend_ma": 1.2,
-    "price_action": 1.2,
-    "parabolic_sar": 1.1,
-    "macd": 1.0,
-    "aroon": 1.0,
-    "vortex": 0.9,
-    "cmf": 0.9,
-    "rsi": 0.7,
-    "mfi": 0.8,
-    "stoch_rsi": 0.6,
-    "williams_r": 0.6,
-    "cci": 0.5,
-    "bollinger": 0.5,
-    "donchian": 0.5,
-}
-
-
-def _vote_value(scores: List[float], weights: List[float]) -> float:
-    """Tính weighted vote: 1 = MUA, -1 = BÁN, 0 = trung tính."""
-    if not scores or not weights:
-        return 0.0
-    arr = np.array(scores)
-    w = np.array(weights)
-    return float(np.average(arr, weights=w))
-
-
-def _vote(name: str, vote: float, votes: list, vweights: list):
-    """vote = +1 (MUA), -1 (BÁN), 0 (trung tính)."""
-    votes.append(vote)
-    vweights.append(_WEIGHTS.get(name, 0.5))
-
-
-def _final(scores: List[float], weights: List[float]) -> Dict[str, Any]:
-    """
-    Voting system: đếm % weighted votes đồng thuận với hướng chính.
-    - Mỗi indicator vote: >0 = MUA, <0 = BÁN, =0 = trung tính
-    - Confidence = % weighted votes cùng hướng (bỏ qua trung tính)
-    - Chỉ emit MUA/BÁN khi confidence >= 70%
-    """
-    if not scores:
-        return {"signal": "KHÔNG_RÕ", "score": 0.0, "confidence": 0.0, "votes": 0}
-
-    w_vote = _vote_value(scores, weights)
-    buy_w = sum(w for s, w in zip(scores, weights) if s > 0)
-    sell_w = sum(w for s, w in zip(scores, weights) if s < 0)
-    total_active = buy_w + sell_w
-
-    if total_active == 0:
-        return {"signal": "KHÔNG_RÕ", "score": 0.0, "confidence": 0.0, "votes": len(scores)}
-
-    if w_vote > 0:
-        confidence = buy_w / total_active * 100
-    else:
-        confidence = sell_w / total_active * 100
-
-    if confidence >= 70:
-        signal = "MUA" if w_vote > 0 else "BÁN"
-    else:
-        signal = "KHÔNG_RÕ"
-
-    return {
-        "signal": signal,
-        "score": round(w_vote, 2),
-        "confidence": round(confidence, 1),
-        "votes": len(scores),
-    }
+from .voting import validate_vote, final_vote
+from .divergence import detect_divergence
 
 
 def _choppiness_filter(indicators: Dict) -> bool:
@@ -113,12 +36,12 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
     if close_val is None:
         return _empty_result()
 
-    short_v: List[float] = []
-    short_w: List[float] = []
-    med_v: List[float] = []
-    med_w: List[float] = []
-    long_v: List[float] = []
-    long_w: List[float] = []
+    short_v: list[float] = []
+    short_w: list[float] = []
+    med_v: list[float] = []
+    med_w: list[float] = []
+    long_v: list[float] = []
+    long_w: list[float] = []
 
     # ============== TREND-FOLLOWING ==============
 
@@ -126,8 +49,8 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
     st_dir = latest(indicators.get("supertrend_direction"))
     if st_dir is not None:
         v = 1.0 if st_dir == -1 else -1.0
-        _vote("supertrend", v, short_v, short_w)
-        _vote("supertrend", v, med_v, med_w)
+        validate_vote("supertrend", v, short_v, short_w)
+        validate_vote("supertrend", v, med_v, med_w)
 
     # 2. ADX + DI (w=1.4)
     adx_val = latest(indicators.get("adx"))
@@ -138,9 +61,9 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = 1.0 if adx_val >= 25 else 0.5
         else:
             v = -1.0 if adx_val >= 25 else -0.5
-        _vote("adx", v, short_v, short_w)
-        _vote("adx", v, med_v, med_w)
-        _vote("adx", v, long_v, long_w)
+        validate_vote("adx", v, short_v, short_w)
+        validate_vote("adx", v, med_v, med_w)
+        validate_vote("adx", v, long_v, long_w)
 
     # 3. Ichimoku (w=1.3)
     tenkan = latest(indicators.get("ichimoku_tenkan"))
@@ -166,16 +89,16 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
                 elif close_val < cloud_bot:
                     v -= 0.5
         v = max(-1.0, min(1.0, v))
-        _vote("ichimoku", v, short_v, short_w)
-        _vote("ichimoku", v, med_v, med_w)
-        _vote("ichimoku", v, long_v, long_w)
+        validate_vote("ichimoku", v, short_v, short_w)
+        validate_vote("ichimoku", v, med_v, med_w)
+        validate_vote("ichimoku", v, long_v, long_w)
 
     # 4. Parabolic SAR (w=1.1)
     psar_val = latest(indicators.get("psar"))
     if psar_val is not None and close_val is not None:
         v = 0.8 if close_val > psar_val else -0.8
-        _vote("parabolic_sar", v, med_v, med_w)
-        _vote("parabolic_sar", v, long_v, long_w)
+        validate_vote("parabolic_sar", v, med_v, med_w)
+        validate_vote("parabolic_sar", v, long_v, long_w)
 
     # 5. MA Trend (w=1.2)
     ma_buy, ma_sell = 0, 0
@@ -190,8 +113,8 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
     total_ma = ma_buy + ma_sell
     if total_ma > 0:
         v = (ma_buy - ma_sell) / total_ma
-        _vote("trend_ma", v, med_v, med_w)
-        _vote("trend_ma", v, long_v, long_w)
+        validate_vote("trend_ma", v, med_v, med_w)
+        validate_vote("trend_ma", v, long_v, long_w)
 
     # 6. Aroon (w=1.0)
     ar_up = latest(indicators.get("aroon_up"))
@@ -207,8 +130,8 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = -0.3
         else:
             v = 0.0
-        _vote("aroon", v, med_v, med_w)
-        _vote("aroon", v, long_v, long_w)
+        validate_vote("aroon", v, med_v, med_w)
+        validate_vote("aroon", v, long_v, long_w)
 
     # 7. Vortex (w=0.9)
     vp = latest(indicators.get("vortex_pos"))
@@ -224,7 +147,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = -0.3
         else:
             v = 0.0
-        _vote("vortex", v, med_v, med_w)
+        validate_vote("vortex", v, med_v, med_w)
 
     # ============== MOMENTUM / OSCILLATORS ==============
 
@@ -245,8 +168,8 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             elif hist_latest < hist_prev:
                 v -= 0.3
         v = max(-1.0, min(1.0, v))
-        _vote("macd", v, short_v, short_w)
-        _vote("macd", v, med_v, med_w)
+        validate_vote("macd", v, short_v, short_w)
+        validate_vote("macd", v, med_v, med_w)
 
     # 9. RSI(14) (w=0.7)
     rsi_arr = indicators.get("rsi_14")
@@ -262,10 +185,10 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = 0.3
         else:
             v = 0.0
-        _vote("rsi", v, short_v, short_w)
+        validate_vote("rsi", v, short_v, short_w)
 
     # 10. RSI Divergence
-    rsi_div = _detect_divergence(close_arr, rsi_arr, 14)
+    rsi_div = detect_divergence(close_arr, rsi_arr, 14)
     rsi_div_str = "KHÔNG"
     if rsi_div == "bullish":
         rsi_div_str = "PHÂN_KỲ_TĂNG"
@@ -274,7 +197,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
 
     # 11. MACD Divergence
     macd_arr = indicators.get("macd")
-    macd_div = _detect_divergence(close_arr, macd_arr, 14)
+    macd_div = detect_divergence(close_arr, macd_arr, 14)
     macd_div_str = "KHÔNG"
     if macd_div == "bullish":
         macd_div_str = "PHÂN_KỲ_TĂNG"
@@ -294,7 +217,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = 0.3
         else:
             v = 0.0
-        _vote("stoch_rsi", v, short_v, short_w)
+        validate_vote("stoch_rsi", v, short_v, short_w)
 
     # 13. Williams %R (w=0.6)
     wr_val = latest(indicators.get("williams_%r"))
@@ -307,7 +230,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = 0.3
         else:
             v = -0.3
-        _vote("williams_r", v, short_v, short_w)
+        validate_vote("williams_r", v, short_v, short_w)
 
     # 14. CCI (w=0.5)
     cci_val = latest(indicators.get("cci_20"))
@@ -322,7 +245,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = 0.3
         else:
             v = 0.0
-        _vote("cci", v, short_v, short_w)
+        validate_vote("cci", v, short_v, short_w)
 
     # 15. MFI (w=0.8)
     mfi_val = latest(indicators.get("mfi_14"))
@@ -335,7 +258,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = 0.3
         else:
             v = -0.3
-        _vote("mfi", v, short_v, short_w)
+        validate_vote("mfi", v, short_v, short_w)
 
     # 16. Bollinger %b (w=0.5)
     bb_pct_val = latest(indicators.get("bb_%b"))
@@ -346,7 +269,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = 0.3
         else:
             v = 0.0
-        _vote("bollinger", v, short_v, short_w)
+        validate_vote("bollinger", v, short_v, short_w)
 
     # ============== VOLUME ==============
 
@@ -359,11 +282,11 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = -0.5
         else:
             v = 0.0
-        _vote("cmf", v, med_v, med_w)
+        validate_vote("cmf", v, med_v, med_w)
 
     # 18. Volume Divergence
     obv_arr = indicators.get("obv")
-    vol_div = _detect_divergence(close_arr, obv_arr, 14)
+    vol_div = detect_divergence(close_arr, obv_arr, 14)
     if vol_div == "bullish":
         vol_div_str = "DÒNG_TIỀN_VÀO"
     elif vol_div == "bearish":
@@ -381,7 +304,7 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             v = -0.6
         else:
             v = 0.0
-        _vote("donchian", v, short_v, short_w)
+        validate_vote("donchian", v, short_v, short_w)
 
     # 20. Price Action (w=1.2)
     pa_signal = _price_action_pattern(close_arr, indicators.get("high"), indicators.get("low"))
@@ -396,13 +319,13 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
         v = -0.3
     else:
         v = 0.0
-    _vote("price_action", v, short_v, short_w)
+    validate_vote("price_action", v, short_v, short_w)
 
     # ============== FINAL SIGNALS ==============
 
-    short_result = _final(short_v, short_w)
-    med_result = _final(med_v, med_w)
-    long_result = _final(long_v, long_w)
+    short_result = final_vote(short_v, short_w)
+    med_result = final_vote(med_v, med_w)
+    long_result = final_vote(long_v, long_w)
 
     short_term = short_result["signal"]
     medium_term = med_result["signal"]
@@ -470,33 +393,6 @@ def analyze_trends(indicators: Dict[str, np.ndarray]) -> Dict[str, Any]:
             "long_term_indicators": long_result["votes"],
         },
     }
-
-
-def _detect_divergence(price: np.ndarray, indicator: np.ndarray, window: int = 14) -> Optional[str]:
-    if price is None or indicator is None or len(price) < window * 2:
-        return None
-    end = len(price) - 1
-    start = max(0, end - window * 2)
-    p_slice = price[start:end + 1]
-    i_slice = indicator[start:end + 1]
-    if np.any(np.isnan(p_slice)) or np.any(np.isnan(i_slice)):
-        return None
-    half = len(p_slice) // 2
-    if half < 3:
-        return None
-    p_first = p_slice[:half]
-    p_second = p_slice[half:]
-    i_first = i_slice[:half]
-    i_second = i_slice[half:]
-    p1_min, p1_max = np.min(p_first), np.max(p_first)
-    p2_min, p2_max = np.min(p_second), np.max(p_second)
-    i1_min, i1_max = np.min(i_first), np.max(i_first)
-    i2_min, i2_max = np.min(i_second), np.max(i_second)
-    if p2_min < p1_min and i2_min > i1_min:
-        return "bullish"
-    if p2_max > p1_max and i2_max < i1_max:
-        return "bearish"
-    return None
 
 
 def _price_action_pattern(close: np.ndarray, high: np.ndarray = None, low: np.ndarray = None) -> Dict[str, str]:

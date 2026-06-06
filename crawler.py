@@ -1,31 +1,17 @@
-import sqlite3
 from datetime import datetime, timedelta
 from typing import List, Optional
 
 import yfinance as yf
 import pandas as pd
-from config import DB_PATH, FETCH_DAYS
+from config import FETCH_DAYS
+from patterns import SyncDatabase, AsyncDatabase, Database
 
 
-def get_db_connection():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS stock_prices (
-            symbol TEXT NOT NULL,       -- Stock ticker symbol (e.g. ACB, FPT, VNM)
-            date TEXT NOT NULL,         -- Trading date (YYYY-MM-DD)
-            open REAL,                  -- Opening price
-            high REAL,                  -- Highest price of the session
-            low REAL,                   -- Lowest price of the session
-            close REAL,                 -- Closing price (adjusted)
-            volume INTEGER,             -- Trading volume (shares)
-            PRIMARY KEY (symbol, date)
-        )
-    """)
-    conn.commit()
-    return conn
+def get_db() -> SyncDatabase:
+    return SyncDatabase()
 
+
+# ==================== Sync versions ====================
 
 def fetch_yfinance(symbol: str, days: int = FETCH_DAYS) -> List[dict]:
     end = datetime.now()
@@ -53,10 +39,11 @@ async def crawl_symbol(symbol: str, days: int = FETCH_DAYS) -> List[dict]:
     return fetch_yfinance(symbol, days)
 
 
-def save_prices(rows: List[dict]):
+def save_prices(rows: List[dict], db: Optional[Database] = None):
     if not rows:
         return
-    conn = get_db_connection()
+    db = db or SyncDatabase()
+    conn = db.get_connection()
     conn.executemany(
         """INSERT OR REPLACE INTO stock_prices
            (symbol, date, open, high, low, close, volume)
@@ -64,35 +51,52 @@ def save_prices(rows: List[dict]):
         rows,
     )
     conn.commit()
-    conn.close()
 
 
-def load_prices(symbol: str, limit: int = 500) -> List[dict]:
-    conn = get_db_connection()
-    cur = conn.execute(
+def load_prices(symbol: str, limit: int = 500, db: Optional[Database] = None) -> List[dict]:
+    db = db or SyncDatabase()
+    return db.fetchall(
         """SELECT date, open, high, low, close, volume
            FROM stock_prices WHERE symbol = ?
            ORDER BY date ASC LIMIT ?""",
         (symbol, limit),
     )
-    rows = [dict(row) for row in cur.fetchall()]
-    conn.close()
-    return rows
 
 
-def get_symbols_in_db() -> List[str]:
-    conn = get_db_connection()
-    cur = conn.execute("SELECT DISTINCT symbol FROM stock_prices")
-    symbols = [row[0] for row in cur.fetchall()]
-    conn.close()
-    return symbols
+def get_symbols_in_db(db: Optional[Database] = None) -> List[str]:
+    db = db or SyncDatabase()
+    rows = db.fetchall("SELECT DISTINCT symbol FROM stock_prices")
+    return [r["symbol"] for r in rows]
 
 
-def get_latest_date(symbol: str) -> Optional[str]:
-    conn = get_db_connection()
-    cur = conn.execute(
-        "SELECT MAX(date) FROM stock_prices WHERE symbol = ?", (symbol,)
+def get_latest_date(symbol: str, db: Optional[Database] = None) -> Optional[str]:
+    db = db or SyncDatabase()
+    row = db.fetchone(
+        "SELECT MAX(date) AS max_date FROM stock_prices WHERE symbol = ?", (symbol,)
     )
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else None
+    return row["max_date"] if row else None
+
+
+# ==================== Async versions ====================
+
+async def async_save_prices(rows: List[dict], db: Optional[AsyncDatabase] = None):
+    if not rows:
+        return
+    db = db or AsyncDatabase()
+    await db.executemany(
+        """INSERT OR REPLACE INTO stock_prices
+           (symbol, date, open, high, low, close, volume)
+           VALUES (:symbol, :date, :open, :high, :low, :close, :volume)""",
+        rows,
+    )
+    await db.commit()
+
+
+async def async_load_prices(symbol: str, limit: int = 500, db: Optional[AsyncDatabase] = None) -> List[dict]:
+    db = db or AsyncDatabase()
+    return await db.fetchall(
+        """SELECT date, open, high, low, close, volume
+           FROM stock_prices WHERE symbol = ?
+           ORDER BY date ASC LIMIT ?""",
+        (symbol, limit),
+    )
