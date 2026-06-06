@@ -13,13 +13,13 @@ def get_db_connection():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS stock_prices (
-            symbol TEXT NOT NULL,
-            date TEXT NOT NULL,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume INTEGER,
+            symbol TEXT NOT NULL,       -- Stock ticker symbol (e.g. ACB, FPT, VNM)
+            date TEXT NOT NULL,         -- Trading date (YYYY-MM-DD)
+            open REAL,                  -- Opening price
+            high REAL,                  -- Highest price of the session
+            low REAL,                   -- Lowest price of the session
+            close REAL,                 -- Closing price (adjusted)
+            volume INTEGER,             -- Trading volume (shares)
             PRIMARY KEY (symbol, date)
         )
     """)

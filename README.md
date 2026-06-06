@@ -30,6 +30,22 @@ uvicorn main:app --host 0.0.0.0 --port 8000
 docker compose up -d
 ```
 
+## Database
+
+The system uses SQLite (`stock_data.db` by default). The database is created automatically on first run with the following schema:
+
+| Column | Type | Description |
+|---|---|---|
+| `symbol` | TEXT | Stock ticker symbol (e.g. ACB, FPT, VNM) |
+| `date` | TEXT | Trading date (YYYY-MM-DD) |
+| `open` | REAL | Opening price |
+| `high` | REAL | Highest price of the session |
+| `low` | REAL | Lowest price of the session |
+| `close` | REAL | Closing price (adjusted) |
+| `volume` | INTEGER | Trading volume (shares) |
+
+Primary key is `(symbol, date)`. Data is stored in WAL mode for better concurrency.
+
 ## Configuration
 
 Set environment variables in `.env`:
